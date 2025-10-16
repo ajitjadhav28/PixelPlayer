@@ -95,7 +95,6 @@ fun LibraryActionRow(
     onSortIconClick: () -> Unit,
     isPlaylistTab: Boolean,
     onGenerateWithAiClick: () -> Unit,
-    onFilterClick: () -> Unit,
     isFoldersTab: Boolean,
     modifier: Modifier = Modifier,
     // Breadcrumb parameters

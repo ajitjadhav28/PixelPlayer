@@ -191,11 +191,11 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope() // Mantener si se usa para acciones de UI
 
     var showSongInfoBottomSheet by remember { mutableStateOf(false) }
-    var showSortBottomSheet by remember { mutableStateOf(false) }
     val selectedSongForInfo by playerViewModel.selectedSongForInfo.collectAsState()
     val tabTitles by playerViewModel.libraryTabsFlow.collectAsState()
     val pagerState = rememberPagerState(initialPage = lastTabIndex) { tabTitles.size }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showSortBottomSheet by remember { mutableStateOf(false) }
     var showReorderTabsSheet by remember { mutableStateOf(false) }
 
     val stableOnMoreOptionsClick: (Song) -> Unit = remember {
@@ -378,38 +378,28 @@ fun LibraryScreen(
                     // shape = AbsoluteSmoothCornerShape(cornerRadiusTL = 24.dp, smoothnessAsPercentTR = 60, /*...*/) // Your custom shape
                 ) {
                     Column(Modifier.fillMaxSize()) {
-                        val playerUiState by playerViewModel.playerUiState.collectAsState()
-                        val playlistUiState by playlistViewModel.uiState.collectAsState()
+                        // OPTIMIZACIÓN: La lógica de ordenamiento ahora es más eficiente.
+                        val availableSortOptions by playerViewModel.availableSortOptions.collectAsState()
 
-                        val availableSortOptions by remember {
-                            derivedStateOf {
+                        // Recolectamos el estado de ordenación de forma más inteligente.
+                        val currentSelectedSortOption by remember(playerViewModel, pagerState.currentPage, tabTitles) {
+                            playerViewModel.playerUiState.map {
                                 when (tabTitles.getOrNull(pagerState.currentPage)) {
-                                    "SONGS" -> listOf(SortOption.SongTitleAZ, SortOption.SongTitleZA, SortOption.SongArtist, SortOption.SongAlbum, SortOption.SongDateAdded, SortOption.SongDuration)
-                                    "ALBUMS" -> listOf(SortOption.AlbumTitleAZ, SortOption.AlbumTitleZA, SortOption.AlbumArtist, SortOption.AlbumReleaseYear)
-                                    "ARTIST" -> listOf(SortOption.ArtistNameAZ, SortOption.ArtistNameZA)
-                                    "PLAYLISTS" -> listOf(SortOption.PlaylistNameAZ, SortOption.PlaylistNameZA, SortOption.PlaylistDateCreated)
-                                    "LIKED" -> listOf(SortOption.LikedSongTitleAZ, SortOption.LikedSongTitleZA, SortOption.LikedSongArtist, SortOption.LikedSongAlbum, SortOption.LikedSongDateLiked)
-                                    "FOLDERS" -> listOf(SortOption.FolderNameAZ, SortOption.FolderNameZA)
-                                    else -> emptyList()
+                                    "SONGS" -> it.currentSongSortOption
+                                    "ALBUMS" -> it.currentAlbumSortOption
+                                    "ARTIST" -> it.currentArtistSortOption
+                                    "LIKED" -> it.currentFavoriteSortOption
+                                    "FOLDERS" -> it.currentFolderSortOption
+                                    else -> SortOption.SongTitleAZ
                                 }
-                            }
-                        }
+                            }.distinctUntilChanged()
+                        }.collectAsState(initial = SortOption.SongTitleAZ)
 
-                        val currentSelectedSortOption by remember {
-                            derivedStateOf {
-                                when (tabTitles.getOrNull(pagerState.currentPage)) {
-                                    "SONGS" -> playerUiState.currentSongSortOption
-                                    "ALBUMS" -> playerUiState.currentAlbumSortOption
-                                    "ARTIST" -> playerUiState.currentArtistSortOption
-                                    "PLAYLISTS" -> playlistUiState.currentPlaylistSortOption
-                                    "LIKED" -> playerUiState.currentFavoriteSortOption
-                                    "FOLDERS" -> playerUiState.currentFolderSortOption
-                                    else -> SortOption.SongTitleAZ // Fallback
-                                }
-                            }
-                        }
+                        val playlistSortOption by remember(playlistViewModel) {
+                            playlistViewModel.uiState.map { it.currentPlaylistSortOption }.distinctUntilChanged()
+                        }.collectAsState(initial = SortOption.PlaylistNameAZ)
 
-                        val onSortOptionChanged: (SortOption) -> Unit = remember(playerViewModel, playlistViewModel) {
+                        val onSortOptionChanged: (SortOption) -> Unit = remember(playerViewModel, playlistViewModel, pagerState.currentPage, tabTitles) {
                             { option ->
                                 when (tabTitles.getOrNull(pagerState.currentPage)) {
                                     "SONGS" -> playerViewModel.sortSongs(option)
@@ -422,6 +412,7 @@ fun LibraryScreen(
                             }
                         }
 
+                        val playerUiState by playerViewModel.playerUiState.collectAsState()
                         LibraryActionRow(
                             modifier = Modifier.padding(
                                 top = 10.dp,
@@ -447,6 +438,20 @@ fun LibraryScreen(
                             onFolderClick = { playerViewModel.navigateToFolder(it) },
                             onNavigateBack = { playerViewModel.navigateBackFolder() }
                         )
+
+                        if (showSortBottomSheet) {
+                            val finalSortOption = if (tabTitles.getOrNull(pagerState.currentPage) == "PLAYLISTS") {
+                                playlistSortOption
+                            } else {
+                                currentSelectedSortOption
+                            }
+                            SortBottomSheet(
+                                availableSortOptions = availableSortOptions,
+                                selectedSortOption = finalSortOption,
+                                onSortOptionSelected = onSortOptionChanged,
+                                onDismiss = { showSortBottomSheet = false }
+                            )
+                        }
 
                         HorizontalPager(
                             state = pagerState,
@@ -741,60 +746,6 @@ fun LibraryScreen(
                 playerViewModel.resetLibraryTabsOrder()
             },
             onDismiss = { showReorderTabsSheet = false }
-        )
-    }
-
-    val playerUiState by playerViewModel.playerUiState.collectAsState()
-    val playlistUiState by playlistViewModel.uiState.collectAsState()
-
-    val availableSortOptions by remember(pagerState.currentPage, tabTitles) {
-        derivedStateOf {
-            when (tabTitles.getOrNull(pagerState.currentPage)) {
-                "SONGS" -> listOf(SortOption.SongTitleAZ, SortOption.SongTitleZA, SortOption.SongArtist, SortOption.SongAlbum, SortOption.SongDateAdded, SortOption.SongDuration)
-                "ALBUMS" -> listOf(SortOption.AlbumTitleAZ, SortOption.AlbumTitleZA, SortOption.AlbumArtist, SortOption.AlbumReleaseYear)
-                "ARTIST" -> listOf(SortOption.ArtistNameAZ, SortOption.ArtistNameZA)
-                "PLAYLISTS" -> listOf(SortOption.PlaylistNameAZ, SortOption.PlaylistNameZA, SortOption.PlaylistDateCreated)
-                "LIKED" -> listOf(SortOption.LikedSongTitleAZ, SortOption.LikedSongTitleZA, SortOption.LikedSongArtist, SortOption.LikedSongAlbum, SortOption.LikedSongDateLiked)
-                "FOLDERS" -> listOf(SortOption.FolderNameAZ, SortOption.FolderNameZA)
-                else -> emptyList()
-            }
-        }
-    }
-    val currentSelectedSortOption by remember(pagerState.currentPage, tabTitles, playerUiState, playlistUiState) {
-        derivedStateOf {
-            when (tabTitles.getOrNull(pagerState.currentPage)) {
-                "SONGS" -> it.currentSongSortOption
-                "ALBUMS" -> it.currentAlbumSortOption
-                "ARTIST" -> it.currentArtistSortOption
-                "LIKED" -> it.currentFavoriteSortOption
-                "FOLDERS" -> it.currentFolderSortOption
-                else -> SortOption.SongTitleAZ
-            }
-        }.distinctUntilChanged()
-    }.collectAsState(initial = SortOption.SongTitleAZ)
-
-    val onSortOptionChanged: (SortOption) -> Unit = remember(playerViewModel, playlistViewModel, pagerState.currentPage, tabTitles) {
-        { option ->
-            when (tabTitles.getOrNull(pagerState.currentPage)) {
-                "SONGS" -> playerViewModel.sortSongs(option)
-                "ALBUMS" -> playerViewModel.sortAlbums(option)
-                "ARTIST" -> playerViewModel.sortArtists(option)
-                "PLAYLISTS" -> playlistViewModel.sortPlaylists(option)
-                "LIKED" -> playerViewModel.sortFavoriteSongs(option)
-                "FOLDERS" -> playerViewModel.sortFolders(option)
-            }
-        }
-    }
-
-    if (showSortBottomSheet) {
-        SortBottomSheet(
-            onDismiss = { showSortBottomSheet = false },
-            options = availableSortOptions,
-            selectedOption = currentSelectedSortOption,
-            onOptionSelected = { option ->
-                onSortOptionChanged(option)
-                showSortBottomSheet = false
-            }
         )
     }
 }
