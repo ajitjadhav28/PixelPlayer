@@ -380,24 +380,21 @@ fun LibraryScreen(
                     Column(Modifier.fillMaxSize()) {
                         // OPTIMIZACIÓN: La lógica de ordenamiento ahora es más eficiente.
                         val availableSortOptions by playerViewModel.availableSortOptions.collectAsState()
+                        val playerUiState by playerViewModel.playerUiState.collectAsState()
+                        val playlistUiState by playlistViewModel.uiState.collectAsState()
 
                         // Recolectamos el estado de ordenación de forma más inteligente.
-                        val currentSelectedSortOption by remember(playerViewModel, pagerState.currentPage, tabTitles) {
-                            playerViewModel.playerUiState.map {
-                                when (tabTitles.getOrNull(pagerState.currentPage)) {
-                                    "SONGS" -> it.currentSongSortOption
-                                    "ALBUMS" -> it.currentAlbumSortOption
-                                    "ARTIST" -> it.currentArtistSortOption
-                                    "LIKED" -> it.currentFavoriteSortOption
-                                    "FOLDERS" -> it.currentFolderSortOption
-                                    else -> SortOption.SongTitleAZ
-                                }
-                            }.distinctUntilChanged()
-                        }.collectAsState(initial = SortOption.SongTitleAZ)
-
-                        val playlistSortOption by remember(playlistViewModel) {
-                            playlistViewModel.uiState.map { it.currentPlaylistSortOption }.distinctUntilChanged()
-                        }.collectAsState(initial = SortOption.PlaylistNameAZ)
+                        val currentSelectedSortOption = remember(pagerState.currentPage, tabTitles, playerUiState, playlistUiState) {
+                             when (tabTitles.getOrNull(pagerState.currentPage)) {
+                                "SONGS" -> playerUiState.currentSongSortOption
+                                "ALBUMS" -> playerUiState.currentAlbumSortOption
+                                "ARTIST" -> playerUiState.currentArtistSortOption
+                                "PLAYLISTS" -> playlistUiState.currentPlaylistSortOption
+                                "LIKED" -> playerUiState.currentFavoriteSortOption
+                                "FOLDERS" -> playerUiState.currentFolderSortOption
+                                else -> SortOption.SongTitleAZ
+                            }
+                        }
 
                         val onSortOptionChanged: (SortOption) -> Unit = remember(playerViewModel, playlistViewModel, pagerState.currentPage, tabTitles) {
                             { option ->
@@ -411,8 +408,6 @@ fun LibraryScreen(
                                 }
                             }
                         }
-
-                        val playerUiState by playerViewModel.playerUiState.collectAsState()
                         LibraryActionRow(
                             modifier = Modifier.padding(
                                 top = 10.dp,
