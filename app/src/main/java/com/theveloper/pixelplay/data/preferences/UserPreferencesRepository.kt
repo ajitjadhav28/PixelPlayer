@@ -56,6 +56,7 @@ class UserPreferencesRepository @Inject constructor(
         val ARTISTS_SORT_OPTION = stringPreferencesKey("artists_sort_option")
         val PLAYLISTS_SORT_OPTION = stringPreferencesKey("playlists_sort_option")
         val LIKED_SONGS_SORT_OPTION = stringPreferencesKey("liked_songs_sort_option")
+        val FOLDERS_SORT_OPTION = stringPreferencesKey("folders_sort_option")
 
         // UI State Keys
         val LAST_LIBRARY_TAB_INDEX = intPreferencesKey("last_library_tab_index") // Corrected: Add intPreferencesKey here
@@ -280,7 +281,7 @@ class UserPreferencesRepository @Inject constructor(
 
     val likedSongsSortOptionFlow: Flow<String> = dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.LIKED_SONGS_SORT_OPTION] ?: SortOption.LikedSongTitleAZ.displayName
+            preferences[PreferencesKeys.LIKED_SONGS_SORT_OPTION] ?: SortOption.LikedSongDateLiked.displayName
         }
 
     // Functions to update Sort Options
@@ -311,6 +312,17 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setLikedSongsSortOption(optionName: String) {
         dataStore.edit { preferences ->
             preferences[PreferencesKeys.LIKED_SONGS_SORT_OPTION] = optionName
+        }
+    }
+
+    val foldersSortOptionFlow: Flow<String> = dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.FOLDERS_SORT_OPTION] ?: SortOption.FolderNameAZ.displayName
+        }
+
+    suspend fun setFoldersSortOption(optionName: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FOLDERS_SORT_OPTION] = optionName
         }
     }
 

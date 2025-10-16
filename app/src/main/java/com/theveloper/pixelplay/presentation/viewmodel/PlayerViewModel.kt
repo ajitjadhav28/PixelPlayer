@@ -346,53 +346,42 @@ class PlayerViewModel @Inject constructor(
 
     private val _loadedTabs = MutableStateFlow(emptySet<String>())
 
-    val availableSortOptions: StateFlow<List<SortOption>> =
-        lastLibraryTabIndexFlow.map { tabIndex ->
-            Trace.beginSection("PlayerViewModel.availableSortOptionsMapping")
-            val options = when (tabIndex) {
-                0 -> listOf(
-                    SortOption.SongTitleAZ,
-                    SortOption.SongTitleZA,
-                    SortOption.SongArtist,
-                    SortOption.SongAlbum,
-                    SortOption.SongDateAdded,
-                    SortOption.SongDuration
-                )
-                1 -> listOf(
-                    SortOption.AlbumTitleAZ,
-                    SortOption.AlbumTitleZA,
-                    SortOption.AlbumArtist,
-                    SortOption.AlbumReleaseYear
-                )
-                2 -> listOf(SortOption.ArtistNameAZ, SortOption.ArtistNameZA)
-                3 -> listOf(
-                    SortOption.PlaylistNameAZ,
-                    SortOption.PlaylistNameZA,
-                    SortOption.PlaylistDateCreated
-                )
-                4 -> listOf(
-                    SortOption.FolderNameAZ,
-                    SortOption.FolderNameZA
-                )
-                5 -> listOf(
-                    SortOption.LikedSongTitleAZ,
-                    SortOption.LikedSongTitleZA,
-                    SortOption.LikedSongArtist,
-                    SortOption.LikedSongAlbum,
-                    SortOption.LikedSongDateLiked
-                )
-                else -> emptyList()
-            }
-            Trace.endSection()
-            options
-        }.stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = listOf( // Provide a default initial value based on initialTab index 0
-                SortOption.SongTitleAZ, SortOption.SongTitleZA, SortOption.SongArtist,
-                SortOption.SongAlbum, SortOption.SongDateAdded, SortOption.SongDuration
+    fun getAvailableSortOptionsForTab(tabId: String): List<SortOption> {
+        return when (tabId) {
+            "SONGS" -> listOf(
+                SortOption.SongTitleAZ,
+                SortOption.SongTitleZA,
+                SortOption.SongArtist,
+                SortOption.SongAlbum,
+                SortOption.SongDateAdded,
+                SortOption.SongDuration
             )
-        )
+            "ALBUMS" -> listOf(
+                SortOption.AlbumTitleAZ,
+                SortOption.AlbumTitleZA,
+                SortOption.AlbumArtist,
+                SortOption.AlbumReleaseYear
+            )
+            "ARTIST" -> listOf(SortOption.ArtistNameAZ, SortOption.ArtistNameZA)
+            "PLAYLISTS" -> listOf(
+                SortOption.PlaylistNameAZ,
+                SortOption.PlaylistNameZA,
+                SortOption.PlaylistDateCreated
+            )
+            "FOLDERS" -> listOf(
+                SortOption.FolderNameAZ,
+                SortOption.FolderNameZA
+            )
+            "LIKED" -> listOf(
+                SortOption.LikedSongTitleAZ,
+                SortOption.LikedSongTitleZA,
+                SortOption.LikedSongArtist,
+                SortOption.LikedSongAlbum,
+                SortOption.LikedSongDateLiked
+            )
+            else -> emptyList()
+        }
+    }
 
     val isSyncingStateFlow: StateFlow<Boolean> = syncManager.isSyncing
         .stateIn(
@@ -591,28 +580,18 @@ class PlayerViewModel @Inject constructor(
     }
 
     // Helper function to convert SortOption name string to SortOption object
-    private fun getSortOptionFromString(optionName: String?): SortOption? {
-        return when (optionName) {
-            SortOption.SongTitleAZ.displayName -> SortOption.SongTitleAZ
-            SortOption.SongTitleZA.displayName -> SortOption.SongTitleZA
-            SortOption.SongArtist.displayName -> SortOption.SongArtist
-            SortOption.SongAlbum.displayName -> SortOption.SongAlbum
-            SortOption.SongDateAdded.displayName -> SortOption.SongDateAdded
-            SortOption.SongDuration.displayName -> SortOption.SongDuration
-            SortOption.AlbumTitleAZ.displayName -> SortOption.AlbumTitleAZ
-            SortOption.AlbumTitleZA.displayName -> SortOption.AlbumTitleZA
-            SortOption.AlbumArtist.displayName -> SortOption.AlbumArtist
-            SortOption.AlbumReleaseYear.displayName -> SortOption.AlbumReleaseYear
-            SortOption.ArtistNameAZ.displayName -> SortOption.ArtistNameAZ
-            SortOption.ArtistNameZA.displayName -> SortOption.ArtistNameZA
-            SortOption.LikedSongTitleAZ.displayName -> SortOption.LikedSongTitleAZ
-            SortOption.LikedSongTitleZA.displayName -> SortOption.LikedSongTitleZA
-            SortOption.LikedSongArtist.displayName -> SortOption.LikedSongArtist
-            SortOption.LikedSongAlbum.displayName -> SortOption.LikedSongAlbum
-            SortOption.LikedSongDateLiked.displayName -> SortOption.LikedSongDateLiked
-            // Playlist options are not handled by PlayerViewModel
-            else -> null // Or a default SortOption if appropriate
-        }
+    private fun getSortOptionFromString(optionName: String?): SortOption {
+        val allOptions = listOf(
+            SortOption.SongTitleAZ, SortOption.SongTitleZA, SortOption.SongArtist, SortOption.SongAlbum,
+            SortOption.SongDateAdded, SortOption.SongDuration,
+            SortOption.AlbumTitleAZ, SortOption.AlbumTitleZA, SortOption.AlbumArtist, SortOption.AlbumReleaseYear,
+            SortOption.ArtistNameAZ, SortOption.ArtistNameZA,
+            SortOption.LikedSongTitleAZ, SortOption.LikedSongTitleZA, SortOption.LikedSongArtist,
+            SortOption.LikedSongAlbum, SortOption.LikedSongDateLiked,
+            SortOption.PlaylistNameAZ, SortOption.PlaylistNameZA, SortOption.PlaylistDateCreated,
+            SortOption.FolderNameAZ, SortOption.FolderNameZA
+        )
+        return allOptions.find { it.displayName == optionName } ?: SortOption.SongTitleAZ // Default fallback
     }
 
     init {
@@ -624,17 +603,20 @@ class PlayerViewModel @Inject constructor(
 
         // Load initial sort options ONCE at startup.
         viewModelScope.launch {
-            val initialSongSort = getSortOptionFromString(userPreferencesRepository.songsSortOptionFlow.first()) ?: SortOption.SongTitleAZ
-            val initialAlbumSort = getSortOptionFromString(userPreferencesRepository.albumsSortOptionFlow.first()) ?: SortOption.AlbumTitleAZ
-            val initialArtistSort = getSortOptionFromString(userPreferencesRepository.artistsSortOptionFlow.first()) ?: SortOption.ArtistNameAZ
-            val initialLikedSort = getSortOptionFromString(userPreferencesRepository.likedSongsSortOptionFlow.first()) ?: SortOption.LikedSongTitleAZ
+            val initialSongSort = getSortOptionFromString(userPreferencesRepository.songsSortOptionFlow.first())
+            val initialAlbumSort = getSortOptionFromString(userPreferencesRepository.albumsSortOptionFlow.first())
+            val initialArtistSort = getSortOptionFromString(userPreferencesRepository.artistsSortOptionFlow.first())
+            val initialLikedSort = getSortOptionFromString(userPreferencesRepository.likedSongsSortOptionFlow.first())
+            val initialFolderSort = getSortOptionFromString(userPreferencesRepository.foldersSortOptionFlow.first())
+
 
             _playerUiState.update {
                 it.copy(
                     currentSongSortOption = initialSongSort,
                     currentAlbumSortOption = initialAlbumSort,
                     currentArtistSortOption = initialArtistSort,
-                    currentFavoriteSortOption = initialLikedSort
+                    currentFavoriteSortOption = initialLikedSort,
+                    currentFolderSortOption = initialFolderSort
                 )
             }
             // Also update the dedicated flow for favorites to ensure consistency

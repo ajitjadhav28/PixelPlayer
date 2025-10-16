@@ -128,6 +128,7 @@ import com.theveloper.pixelplay.presentation.components.AiPlaylistSheet
 import com.theveloper.pixelplay.presentation.components.PlaylistArtCollage
 import com.theveloper.pixelplay.presentation.components.ReorderTabsSheet
 import com.theveloper.pixelplay.presentation.components.SongInfoBottomSheet
+import com.theveloper.pixelplay.presentation.components.SortingBottomSheet
 import com.theveloper.pixelplay.presentation.components.subcomps.LibraryActionRow
 import com.theveloper.pixelplay.presentation.components.subcomps.SineWaveLine
 import com.theveloper.pixelplay.presentation.navigation.Screen
@@ -194,8 +195,8 @@ fun LibraryScreen(
     val tabTitles by playerViewModel.libraryTabsFlow.collectAsState()
     val pagerState = rememberPagerState(initialPage = lastTabIndex) { tabTitles.size }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
-    var showSortMenu by remember { mutableStateOf(false) } // Mantener para la visibilidad del menú
-    var showReorderTabsSheet by remember { mutableStateOf(false) }
+    var showSortSheet by remember { mutableStateOf(false) }
+    var showReorderTabsSheet by remember { mutableState of(false) }
 
     val stableOnMoreOptionsClick: (Song) -> Unit = remember {
         { song ->
@@ -377,30 +378,40 @@ fun LibraryScreen(
                     // shape = AbsoluteSmoothCornerShape(cornerRadiusTL = 24.dp, smoothnessAsPercentTR = 60, /*...*/) // Your custom shape
                 ) {
                     Column(Modifier.fillMaxSize()) {
-                        // OPTIMIZACIÓN: La lógica de ordenamiento ahora es más eficiente.
-                        val availableSortOptions by playerViewModel.availableSortOptions.collectAsState()
+                        val playerUiState by playerViewModel.playerUiState.collectAsState()
+                        val playlistUiState by playlistViewModel.uiState.collectAsState()
 
-                        // Recolectamos el estado de ordenación de forma más inteligente.
-                        val currentSelectedSortOption by remember(playerViewModel, pagerState.currentPage, tabTitles) {
-                            playerViewModel.playerUiState.map {
-                                when (tabTitles.getOrNull(pagerState.currentPage)) {
-                                    "SONGS" -> it.currentSongSortOption
-                                    "ALBUMS" -> it.currentAlbumSortOption
-                                    "ARTIST" -> it.currentArtistSortOption
-                                    "LIKED" -> it.currentFavoriteSortOption
-                                    "FOLDERS" -> it.currentFolderSortOption
-                                    else -> SortOption.SongTitleAZ
+                        // Determina la pestaña actual de forma reactiva y estable
+                        val currentTabId by remember {
+                            derivedStateOf {
+                                tabTitles.getOrNull(pagerState.currentPage)
+                            }
+                        }
+
+                        // Obtiene las opciones de ordenación para la pestaña actual
+                        val availableSortOptions = remember(currentTabId) {
+                            currentTabId?.let { playerViewModel.getAvailableSortOptionsForTab(it) } ?: emptyList()
+                        }
+
+                        // Determina la opción de ordenación actualmente seleccionada para la pestaña actual
+                        val selectedSortOption by remember(currentTabId, playerUiState, playlistUiState) {
+                            derivedStateOf {
+                                when (currentTabId) {
+                                    "SONGS" -> playerUiState.currentSongSortOption
+                                    "ALBUMS" -> playerUiState.currentAlbumSortOption
+                                    "ARTIST" -> playerUiState.currentArtistSortOption
+                                    "LIKED" -> playerUiState.currentFavoriteSortOption
+                                    "FOLDERS" -> playerUiState.currentFolderSortOption
+                                    "PLAYLISTS" -> playlistUiState.currentPlaylistSortOption
+                                    else -> SortOption.SongTitleAZ // Fallback
                                 }
-                            }.distinctUntilChanged()
-                        }.collectAsState(initial = SortOption.SongTitleAZ)
+                            }
+                        }
 
-                        val playlistSortOption by remember(playlistViewModel) {
-                            playlistViewModel.uiState.map { it.currentPlaylistSortOption }.distinctUntilChanged()
-                        }.collectAsState(initial = SortOption.PlaylistNameAZ)
-
-                        val onSortOptionChanged: (SortOption) -> Unit = remember(playerViewModel, playlistViewModel, pagerState.currentPage, tabTitles) {
+                        // Callback para cuando se selecciona una nueva opción de ordenación
+                        val onSortOptionChanged: (SortOption) -> Unit = remember(currentTabId, playerViewModel, playlistViewModel) {
                             { option ->
-                                when (tabTitles.getOrNull(pagerState.currentPage)) {
+                                when (currentTabId) {
                                     "SONGS" -> playerViewModel.sortSongs(option)
                                     "ALBUMS" -> playerViewModel.sortAlbums(option)
                                     "ARTIST" -> playerViewModel.sortArtists(option)
@@ -408,19 +419,15 @@ fun LibraryScreen(
                                     "LIKED" -> playerViewModel.sortFavoriteSongs(option)
                                     "FOLDERS" -> playerViewModel.sortFolders(option)
                                 }
+                                showSortSheet = false // Cierra el bottom sheet
                             }
                         }
 
-                        val playerUiState by playerViewModel.playerUiState.collectAsState()
                         LibraryActionRow(
-                            modifier = Modifier.padding(
-                                top = 10.dp,
-                                start = 10.dp,
-                                end = 10.dp
-                            ),
+                            modifier = Modifier.padding(top = 10.dp, start = 10.dp, end = 10.dp),
                             currentPage = pagerState.currentPage,
                             onMainActionClick = {
-                                when (tabTitles.getOrNull(pagerState.currentPage)) {
+                                when (currentTabId) {
                                     "PLAYLISTS" -> showCreatePlaylistDialog = true
                                     "LIKED" -> playerViewModel.shuffleFavoriteSongs()
                                     else -> playerViewModel.shuffleAllSongs()
@@ -428,17 +435,14 @@ fun LibraryScreen(
                             },
                             iconRotation = iconRotation,
                             showSortButton = availableSortOptions.isNotEmpty(),
-                            onSortIconClick = { showSortMenu = !showSortMenu },
-                            showSortMenu = showSortMenu,
-                            onDismissSortMenu = { showSortMenu = false },
+                            onSortIconClick = { showSortSheet = true },
+                            showSortSheet = showSortSheet,
+                            onDismissSortSheet = { showSortSheet = false },
                             currentSortOptionsForTab = availableSortOptions,
-                            selectedSortOption = currentSelectedSortOption,
-                            onSortOptionSelected = { option ->
-                                onSortOptionChanged(option)
-                                showSortMenu = false // Dismiss menu on selection
-                            },
-                            isPlaylistTab = tabTitles.getOrNull(pagerState.currentPage) == "PLAYLISTS",
-                            isFoldersTab = tabTitles.getOrNull(pagerState.currentPage) == "FOLDERS",
+                            selectedSortOption = selectedSortOption,
+                            onSortOptionSelected = onSortOptionChanged,
+                            isPlaylistTab = currentTabId == "PLAYLISTS",
+                            isFoldersTab = currentTabId == "FOLDERS",
                             onGenerateWithAiClick = { playerViewModel.showAiPlaylistSheet() },
                             onFilterClick = { playerViewModel.toggleFolderFilter() },
                             currentFolder = playerUiState.currentFolder,
