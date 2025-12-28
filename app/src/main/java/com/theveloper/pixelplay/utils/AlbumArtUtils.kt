@@ -9,8 +9,15 @@ import androidx.core.net.toUri
 import com.theveloper.pixelplay.data.database.MusicDao
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
 
 object AlbumArtUtils {
+
+    // Cache to track files we already checked for "no art" to avoid repeated file system checks
+    private val noArtCache = ConcurrentHashMap<Long, Boolean>()
+    
+    // Cache for album art URIs to avoid repeated extractions for the same album
+    private val albumArtCache = ConcurrentHashMap<Long, String>()
 
     /**
      * Main function to get album art - tries multiple methods
@@ -23,11 +30,20 @@ object AlbumArtUtils {
         songId: Long,
         deepScan: Boolean
     ): String? {
+        // Check album art cache first (many songs share the same album)
+        albumArtCache[albumId]?.let { return it }
+        
         // Method 1: Try MediaStore (even though it often fails)
 //        getMediaStoreAlbumArtUri(appContext, albumId)?.let { return it.toString() }
 
         // Method 2: Try embedded art from file
-        getEmbeddedAlbumArtUri(appContext, path, songId, deepScan)?.let { return it.toString() }
+        val embeddedArt = getEmbeddedAlbumArtUri(appContext, path, songId, deepScan)
+        if (embeddedArt != null) {
+            val artString = embeddedArt.toString()
+            albumArtCache[albumId] = artString
+            return artString
+        }
+        
         // Method 3: try from db
 //        musicDao.getAlbumArtUriById(songId)?.let {
 //            return it
@@ -47,11 +63,13 @@ object AlbumArtUtils {
         songId: Long,
         deepScan: Boolean
     ): Uri? {
-        if (!File(filePath).exists() || !File(filePath).canRead()) {
+        // Quick file existence check
+        val file = File(filePath)
+        if (!file.exists() || !file.canRead()) {
             return null
         }
+        
         if (!deepScan) {
-
             // 1. Check if art is already cached
             val cachedFile = File(appContext.cacheDir, "song_art_${songId}.jpg")
             if (cachedFile.exists()) {
@@ -67,18 +85,21 @@ object AlbumArtUtils {
             }
         }
 
-        // 2. Check if marked as "no art" to skip extraction
-        val noArtFile = File(appContext.cacheDir, "song_art_${songId}_no.jpg")
-        if (noArtFile.exists()) {
-            if (deepScan)
-                noArtFile.delete()
-            else
+        // 2. Check in-memory cache for "no art" marker
+        if (noArtCache.containsKey(songId)) {
+            if (deepScan) {
+                noArtCache.remove(songId)
+                // Also delete the marker file if it exists
+                File(appContext.cacheDir, "song_art_${songId}_no.jpg").delete()
+            } else {
                 return null
+            }
         }
 
         // 3. Try to extract embedded art
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         return try {
+            retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(filePath)
             } catch (e: IllegalArgumentException) {
@@ -96,14 +117,16 @@ object AlbumArtUtils {
             if (bytes != null) {
                 saveAlbumArtToCache(appContext, bytes, songId)
             } else {
-                // Mark "no art" to avoid trying again
-                noArtFile.createNewFile()
+                // Mark "no art" in memory cache
+                noArtCache[songId] = true
+                // Also create marker file
+                File(appContext.cacheDir, "song_art_${songId}_no.jpg").createNewFile()
                 null
             }
         } catch (e: Exception) {
             null
         } finally {
-            retriever.release()
+            retriever?.release()
         }
     }
 

@@ -443,7 +443,7 @@ interface MusicDao {
 
     /**
      * Insert music data with cross-references in a single transaction.
-     * Uses chunked inserts for cross-refs to avoid SQLite variable limits.
+     * Uses chunked inserts for all entities to avoid SQLite variable limits and improve performance.
      */
     @Transaction
     suspend fun insertMusicDataWithCrossRefs(
@@ -452,9 +452,21 @@ interface MusicDao {
         artists: List<ArtistEntity>,
         crossRefs: List<SongArtistCrossRef>
     ) {
-        insertArtists(artists)
-        insertAlbums(albums)
-        insertSongs(songs)
+        // Insert artists in chunks (each artist has ~3 fields)
+        artists.chunked(ENTITY_BATCH_SIZE).forEach { chunk ->
+            insertArtists(chunk)
+        }
+        
+        // Insert albums in chunks (each album has ~7 fields)
+        albums.chunked(ENTITY_BATCH_SIZE).forEach { chunk ->
+            insertAlbums(chunk)
+        }
+        
+        // Insert songs in chunks (each song has ~17 fields, so use smaller chunks)
+        songs.chunked(SONG_BATCH_SIZE).forEach { chunk ->
+            insertSongs(chunk)
+        }
+        
         // Insert cross-refs in chunks to avoid SQLite variable limit.
         // Each SongArtistCrossRef has 3 fields, so batch size is calculated accordingly.
         crossRefs.chunked(CROSS_REF_BATCH_SIZE).forEach { chunk ->
@@ -470,6 +482,12 @@ interface MusicDao {
          */
         private const val SQLITE_MAX_VARIABLE_NUMBER = 999 // Increase if you know your SQLite version supports more
         private const val CROSS_REF_FIELDS_PER_OBJECT = 3
+        private const val SONG_FIELDS_PER_OBJECT = 17 // SongEntity has many fields
+        private const val ALBUM_FIELDS_PER_OBJECT = 7
+        private const val ARTIST_FIELDS_PER_OBJECT = 3
+        
         val CROSS_REF_BATCH_SIZE: Int = SQLITE_MAX_VARIABLE_NUMBER / CROSS_REF_FIELDS_PER_OBJECT
+        val SONG_BATCH_SIZE: Int = SQLITE_MAX_VARIABLE_NUMBER / SONG_FIELDS_PER_OBJECT
+        val ENTITY_BATCH_SIZE: Int = SQLITE_MAX_VARIABLE_NUMBER / ALBUM_FIELDS_PER_OBJECT
     }
 }

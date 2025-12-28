@@ -20,7 +20,9 @@ import com.theveloper.pixelplay.data.database.SongEntity
 import com.theveloper.pixelplay.data.media.AudioMetadataReader
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.utils.AlbumArtUtils
+import com.theveloper.pixelplay.utils.AudioMeta
 import com.theveloper.pixelplay.utils.AudioMetaUtils.getAudioMetadata
+import com.theveloper.pixelplay.utils.DirectoryRuleResolver
 import com.theveloper.pixelplay.utils.normalizeMetadataTextOrEmpty
 import com.theveloper.pixelplay.utils.splitArtistsByDelimiters
 import dagger.assisted.Assisted
@@ -28,9 +30,14 @@ import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.Collections
+import kotlin.math.min
 
 @HiltWorker
 class SyncWorker @AssistedInject constructor(
@@ -51,15 +58,26 @@ class SyncWorker @AssistedInject constructor(
             val artistDelimiters = userPreferencesRepository.artistDelimitersFlow.first()
             val groupByAlbumArtist = userPreferencesRepository.groupByAlbumArtistFlow.first()
             val rescanRequired = userPreferencesRepository.artistSettingsRescanRequiredFlow.first()
+            
+            // Get excluded directories settings
+            val blockedDirectories = userPreferencesRepository.blockedDirectoriesFlow.first()
+            val allowedDirectories = userPreferencesRepository.allowedDirectoriesFlow.first()
+            val isFilterActive = blockedDirectories.isNotEmpty()
 
             Log.d(TAG, "Artist parsing delimiters: $artistDelimiters, groupByAlbumArtist: $groupByAlbumArtist, rescanRequired: $rescanRequired")
+            Log.d(TAG, "Directory filtering: active=$isFilterActive, blocked=${blockedDirectories.size}, allowed=${allowedDirectories.size}")
 
-            val mediaStoreSongs = fetchAllMusicData { current, total ->
-                setProgress(workDataOf(
-                    PROGRESS_CURRENT to current,
-                    PROGRESS_TOTAL to total
-                ))
-            }
+            val mediaStoreSongs = fetchAllMusicData(
+                onProgress = { current, total ->
+                    setProgress(workDataOf(
+                        PROGRESS_CURRENT to current,
+                        PROGRESS_TOTAL to total
+                    ))
+                },
+                blockedDirectories = blockedDirectories,
+                allowedDirectories = allowedDirectories,
+                isFilterActive = isFilterActive
+            )
             Log.i(TAG, "Fetched ${mediaStoreSongs.size} songs from MediaStore.")
 
             if (mediaStoreSongs.isNotEmpty()) {
@@ -302,14 +320,29 @@ class SyncWorker @AssistedInject constructor(
         }
     }
 
-    private suspend fun fetchAllMusicData(onProgress: suspend (current: Int, total: Int) -> Unit): List<SongEntity> {
+    private suspend fun fetchAllMusicData(
+        onProgress: suspend (current: Int, total: Int) -> Unit,
+        blockedDirectories: Set<String>,
+        allowedDirectories: Set<String>,
+        isFilterActive: Boolean
+    ): List<SongEntity> {
         Trace.beginSection("SyncWorker.fetchAllMusicData")
-        val songs = mutableListOf<SongEntity>()
+        val songs = Collections.synchronizedList(mutableListOf<SongEntity>())
         // Removed genre mapping from initial sync for performance.
         // Genre will be "Unknown Genre" or from static genres for now.
 
         val deepScan = inputData.getBoolean(INPUT_FORCE_METADATA, false)
         val albumArtByAlbumId = if (!deepScan) fetchAlbumArtUrisByAlbumId() else emptyMap()
+        
+        // Create directory filter resolver
+        val directoryResolver = if (isFilterActive) {
+            DirectoryRuleResolver(
+                allowed = allowedDirectories.map { normalizePath(it) }.toSet(),
+                blocked = blockedDirectories.map { normalizePath(it) }.toSet()
+            )
+        } else {
+            null
+        }
 
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
@@ -356,58 +389,44 @@ class SyncWorker @AssistedInject constructor(
             val yearCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.YEAR)
             val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED)
 
-
+            // Collect all basic song data first (fast - just reading from MediaStore cursor)
+            val basicSongData = mutableListOf<BasicSongData>()
+            var skippedCount = 0
+            
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val albumId = cursor.getLong(albumIdCol)
                 val songArtistId = cursor.getLong(artistIdCol)
                 val filePath = cursor.getString(dataCol) ?: ""
                 val parentDir = java.io.File(filePath).parent ?: ""
+                
+                // Apply directory filtering during scan to skip excluded directories
+                if (directoryResolver != null) {
+                    val normalizedParent = normalizePath(parentDir)
+                    if (directoryResolver.isBlocked(normalizedParent)) {
+                        skippedCount++
+                        continue // Skip this song - it's in an excluded directory
+                    }
+                }
 
                 val contentUriString = ContentUris.withAppendedId(
                     MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id
                 ).toString()
 
-                var albumArtUriString = albumArtByAlbumId[albumId]
-                if (deepScan) {
-                    albumArtUriString = AlbumArtUtils.getAlbumArtUri(applicationContext, musicDao, filePath, albumId, id, true)
-                        ?: albumArtUriString
-                }
-                val audioMetadata = if (deepScan) getAudioMetadata(musicDao, id, filePath, true) else null
-
-                var title = cursor.getString(titleCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Title" }
-                var artist = cursor.getString(artistCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Artist" }
-                var album = cursor.getString(albumCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Album" }
-                var albumArtist = cursor.getString(albumArtistCol)?.normalizeMetadataTextOrEmpty()?.takeIf { it.isNotBlank() }
-                var trackNumber = cursor.getInt(trackCol)
-                var year = cursor.getInt(yearCol)
-
-
-                // Fix for WAV files (Issue #462): Read metadata directly from file if it is a WAV
-                if (deepScan && filePath.endsWith(".wav", ignoreCase = true)) {
-                    val file = java.io.File(filePath)
-                    if (file.exists()) {
-                        try {
-                            AudioMetadataReader.read(file)?.let { meta ->
-                                if (!meta.title.isNullOrBlank()) title = meta.title
-                                if (!meta.artist.isNullOrBlank()) artist = meta.artist
-                                if (!meta.album.isNullOrBlank()) album = meta.album
-                                if (meta.trackNumber != null) trackNumber = meta.trackNumber
-                                if (meta.year != null) year = meta.year
-
-                                meta.artwork?.let { art ->
-                                    val uri = AlbumArtUtils.saveAlbumArtToCache(applicationContext, art.bytes, id)
-                                    albumArtUriString = uri.toString()
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to read WAV metadata for $filePath", e)
-                        }
-                    }
+                val albumArtUriString = albumArtByAlbumId[albumId]
+                val title = cursor.getString(titleCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Title" }
+                val artist = cursor.getString(artistCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Artist" }
+                val album = cursor.getString(albumCol).normalizeMetadataTextOrEmpty().ifEmpty { "Unknown Album" }
+                val albumArtist = cursor.getString(albumArtistCol)?.normalizeMetadataTextOrEmpty()?.takeIf { it.isNotBlank() }
+                val trackNumber = cursor.getInt(trackCol)
+                val year = cursor.getInt(yearCol)
+                val duration = cursor.getLong(durationCol)
+                val dateAdded = cursor.getLong(dateAddedCol).let { seconds ->
+                    if (seconds > 0) TimeUnit.SECONDS.toMillis(seconds) else System.currentTimeMillis()
                 }
 
-                songs.add(
-                    SongEntity(
+                basicSongData.add(
+                    BasicSongData(
                         id = id,
                         title = title,
                         artistName = artist,
@@ -417,33 +436,172 @@ class SyncWorker @AssistedInject constructor(
                         albumId = albumId,
                         contentUriString = contentUriString,
                         albumArtUriString = albumArtUriString,
-                        duration = cursor.getLong(durationCol),
-                        genre = null,
+                        duration = duration,
                         filePath = filePath,
                         parentDirectoryPath = parentDir,
                         trackNumber = trackNumber,
                         year = year,
-                        dateAdded = cursor.getLong(dateAddedCol).let { seconds ->
-                            if (seconds > 0) TimeUnit.SECONDS.toMillis(seconds) else System.currentTimeMillis()
-                        },
-                        mimeType = audioMetadata?.mimeType,
-                        sampleRate = audioMetadata?.sampleRate,
-                        bitrate = audioMetadata?.bitrate
+                        dateAdded = dateAdded
                     )
                 )
-                
-                // Report progress in batches to avoid excessive updates
-                processedCount++
-                if (processedCount - lastReportedCount >= PROGRESS_UPDATE_BATCH_SIZE || processedCount == totalCount) {
-                    lastReportedCount = processedCount
-                    onProgress(processedCount, totalCount)
+            }
+            
+            // Log filtering results
+            if (skippedCount > 0) {
+                Log.i(TAG, "Excluded directories filter: skipped $skippedCount songs, keeping ${basicSongData.size} songs")
+            }
+
+            // Process deep scan in parallel batches if needed
+            if (deepScan && basicSongData.isNotEmpty()) {
+                val batchSize = 20 // Process 20 songs in parallel
+                coroutineScope {
+                    basicSongData.chunked(batchSize).forEach { batch ->
+                        val deferredResults = batch.map { basicData ->
+                            async(Dispatchers.IO) {
+                                processDeepScanForSong(basicData)
+                            }
+                        }
+                        
+                        val processedBatch = deferredResults.awaitAll()
+                        songs.addAll(processedBatch)
+                        
+                        processedCount += batch.size
+                        if (processedCount - lastReportedCount >= PROGRESS_UPDATE_BATCH_SIZE || processedCount == totalCount) {
+                            lastReportedCount = processedCount
+                            onProgress(processedCount, totalCount)
+                        }
+                    }
                 }
+            } else {
+                // Fast path - no deep scan, just convert to SongEntity
+                songs.addAll(basicSongData.map { it.toSongEntity(null) })
+                onProgress(basicSongData.size, basicSongData.size)
             }
         }
         Trace.endSection() // End SyncWorker.fetchAllMusicData
         return songs
     }
 
+    /**
+     * Data class to hold basic song information from MediaStore
+     */
+    private data class BasicSongData(
+        val id: Long,
+        val title: String,
+        val artistName: String,
+        val artistId: Long,
+        val albumArtist: String?,
+        val albumName: String,
+        val albumId: Long,
+        val contentUriString: String,
+        val albumArtUriString: String?,
+        val duration: Long,
+        val filePath: String,
+        val parentDirectoryPath: String,
+        val trackNumber: Int,
+        val year: Int,
+        val dateAdded: Long
+    ) {
+        fun toSongEntity(audioMetadata: AudioMeta?): SongEntity {
+            return SongEntity(
+                id = id,
+                title = title,
+                artistName = artistName,
+                artistId = artistId,
+                albumArtist = albumArtist,
+                albumName = albumName,
+                albumId = albumId,
+                contentUriString = contentUriString,
+                albumArtUriString = albumArtUriString,
+                duration = duration,
+                genre = null,
+                filePath = filePath,
+                parentDirectoryPath = parentDirectoryPath,
+                trackNumber = trackNumber,
+                year = year,
+                dateAdded = dateAdded,
+                mimeType = audioMetadata?.mimeType,
+                sampleRate = audioMetadata?.sampleRate,
+                bitrate = audioMetadata?.bitrate
+            )
+        }
+    }
+
+    /**
+     * Process deep scan for a single song (album art extraction, metadata reading, etc.)
+     */
+    private suspend fun processDeepScanForSong(basicData: BasicSongData): SongEntity {
+        var title = basicData.title
+        var artist = basicData.artistName
+        var album = basicData.albumName
+        var albumArtist = basicData.albumArtist
+        var trackNumber = basicData.trackNumber
+        var year = basicData.year
+        var albumArtUriString = basicData.albumArtUriString
+
+        // Get album art and audio metadata
+        albumArtUriString = AlbumArtUtils.getAlbumArtUri(
+            applicationContext, 
+            musicDao, 
+            basicData.filePath, 
+            basicData.albumId, 
+            basicData.id, 
+            true
+        ) ?: albumArtUriString
+        
+        val audioMetadata = getAudioMetadata(musicDao, basicData.id, basicData.filePath, true)
+
+        // Fix for WAV files (Issue #462): Read metadata directly from file if it is a WAV
+        if (basicData.filePath.endsWith(".wav", ignoreCase = true)) {
+            val file = java.io.File(basicData.filePath)
+            if (file.exists()) {
+                try {
+                    AudioMetadataReader.read(file)?.let { meta ->
+                        if (!meta.title.isNullOrBlank()) title = meta.title
+                        if (!meta.artist.isNullOrBlank()) artist = meta.artist
+                        if (!meta.album.isNullOrBlank()) album = meta.album
+                        if (meta.trackNumber != null) trackNumber = meta.trackNumber
+                        if (meta.year != null) year = meta.year
+
+                        meta.artwork?.let { art ->
+                            val uri = AlbumArtUtils.saveAlbumArtToCache(applicationContext, art.bytes, basicData.id)
+                            albumArtUriString = uri.toString()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to read WAV metadata for ${basicData.filePath}", e)
+                }
+            }
+        }
+
+        return SongEntity(
+            id = basicData.id,
+            title = title,
+            artistName = artist,
+            artistId = basicData.artistId,
+            albumArtist = albumArtist,
+            albumName = album,
+            albumId = basicData.albumId,
+            contentUriString = basicData.contentUriString,
+            albumArtUriString = albumArtUriString,
+            duration = basicData.duration,
+            genre = null,
+            filePath = basicData.filePath,
+            parentDirectoryPath = basicData.parentDirectoryPath,
+            trackNumber = trackNumber,
+            year = year,
+            dateAdded = basicData.dateAdded,
+            mimeType = audioMetadata.mimeType,
+            sampleRate = audioMetadata.sampleRate,
+            bitrate = audioMetadata.bitrate
+        )
+    }
+
+    /**
+     * Normalize a file path to its canonical form for consistent directory comparisons.
+     */
+    private fun normalizePath(path: String): String =
+        runCatching { File(path).canonicalPath }.getOrElse { File(path).absolutePath }
 
     companion object {
         const val WORK_NAME = "com.theveloper.pixelplay.data.worker.SyncWorker"
