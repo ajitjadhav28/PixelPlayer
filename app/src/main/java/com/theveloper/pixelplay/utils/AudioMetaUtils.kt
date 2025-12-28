@@ -17,8 +17,14 @@ data class AudioMeta(
 object AudioMetaUtils {
 
     // In-memory cache to avoid re-reading metadata for recently processed files
-    private val metadataCache = ConcurrentHashMap<Long, AudioMeta>()
-    private const val MAX_CACHE_SIZE = 500
+    // Using thread-safe LRU cache with LinkedHashMap
+    private val metadataCache = object : LinkedHashMap<Long, AudioMeta>(100, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, AudioMeta>?): Boolean {
+            return size > MAX_CACHE_SIZE
+        }
+    }
+    private val cacheLock = Any()
+    private const val MAX_CACHE_SIZE = 1000 // Increased cache size
 
     /**
      * Returns audio metadata for a given file path.
@@ -26,15 +32,19 @@ object AudioMetaUtils {
      */
     suspend fun getAudioMetadata(musicDao: MusicDao, id: Long, filePath: String, deepScan: Boolean): AudioMeta {
         // Check in-memory cache first
-        metadataCache[id]?.let { return it }
-        
+        synchronized(cacheLock) {
+            metadataCache[id]?.let { return it }
+        }
+
         val cached = musicDao.getAudioMetadataById(id)
         if (!deepScan && cached != null &&
             cached.mimeType != null &&
             cached.bitrate != null &&
             cached.sampleRate != null
         ) {
-            metadataCache[id] = cached
+            synchronized(cacheLock) {
+                metadataCache[id] = cached
+            }
             return cached
         }
 
@@ -88,13 +98,11 @@ object AudioMetaUtils {
 
         val result = AudioMeta(mimeType, bitrate, sampleRate)
         
-        // Cache the result
-        if (metadataCache.size > MAX_CACHE_SIZE) {
-            // Simple cache eviction - remove random entries
-            metadataCache.keys.take(100).forEach { metadataCache.remove(it) }
+        // Cache the result with LRU eviction handled automatically
+        synchronized(cacheLock) {
+            metadataCache[id] = result
         }
-        metadataCache[id] = result
-        
+
         return result
     }
 

@@ -37,7 +37,6 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.Collections
-import kotlin.math.min
 
 @HiltWorker
 class SyncWorker @AssistedInject constructor(
@@ -91,20 +90,23 @@ class SyncWorker @AssistedInject constructor(
                         // This song exists locally - preserve user-edited fields if they differ from MediaStore
                         // We check if local values are different from what MediaStore would provide,
                         // which suggests user editing. We preserve dateAdded, lyrics, and all editable metadata.
-                        val needsArtistCompare = !rescanRequired &&
+
+                        // Optimize artist comparison by avoiding redundant splits
+                        val shouldPreserveArtistName = if (!rescanRequired &&
                             localSong.artistName.isNotBlank() &&
-                            localSong.artistName != mediaStoreSong.artistName
-                        val shouldPreserveArtistName = if (needsArtistCompare) {
+                            localSong.artistName != mediaStoreSong.artistName) {
                             val mediaStoreArtists = mediaStoreSong.artistName
                                 .splitArtistsByDelimiters(artistDelimiters)
+                            val hasSingleArtist = mediaStoreArtists.size == 1
                             val mediaStorePrimaryArtist = mediaStoreArtists.firstOrNull()?.trim()
-                            val mediaStoreHasMultipleArtists = mediaStoreArtists.size > 1
+                            val mediaStoreHasMultipleArtists = !hasSingleArtist
                             !(mediaStoreHasMultipleArtists &&
                                 mediaStorePrimaryArtist != null &&
                                 localSong.artistName.trim() == mediaStorePrimaryArtist)
                         } else {
                             false
                         }
+
                         mediaStoreSong.copy(
                             dateAdded = localSong.dateAdded,
                             lyrics = localSong.lyrics,
@@ -453,7 +455,7 @@ class SyncWorker @AssistedInject constructor(
 
             // Process deep scan in parallel batches if needed
             if (deepScan && basicSongData.isNotEmpty()) {
-                val batchSize = 20 // Process 20 songs in parallel
+                val batchSize = 50 // Increased from 20 to 50 for better parallelization
                 coroutineScope {
                     basicSongData.chunked(batchSize).forEach { batch ->
                         val deferredResults = batch.map { basicData ->

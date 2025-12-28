@@ -17,7 +17,15 @@ object AlbumArtUtils {
     private val noArtCache = ConcurrentHashMap<Long, Boolean>()
     
     // Cache for album art URIs to avoid repeated extractions for the same album
-    private val albumArtCache = ConcurrentHashMap<Long, String>()
+    // Using LinkedHashMap for LRU behavior with access order
+    private val albumArtCache = object : LinkedHashMap<Long, String>(100, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>?): Boolean {
+            return size > 200 // Keep max 200 albums in cache
+        }
+    }
+
+    // Synchronize access to albumArtCache for thread safety
+    private val cacheLock = Any()
 
     /**
      * Main function to get album art - tries multiple methods
@@ -31,8 +39,10 @@ object AlbumArtUtils {
         deepScan: Boolean
     ): String? {
         // Check album art cache first (many songs share the same album)
-        albumArtCache[albumId]?.let { return it }
-        
+        synchronized(cacheLock) {
+            albumArtCache[albumId]?.let { return it }
+        }
+
         // Method 1: Try MediaStore (even though it often fails)
 //        getMediaStoreAlbumArtUri(appContext, albumId)?.let { return it.toString() }
 
@@ -40,7 +50,9 @@ object AlbumArtUtils {
         val embeddedArt = getEmbeddedAlbumArtUri(appContext, path, songId, deepScan)
         if (embeddedArt != null) {
             val artString = embeddedArt.toString()
-            albumArtCache[albumId] = artString
+            synchronized(cacheLock) {
+                albumArtCache[albumId] = artString
+            }
             return artString
         }
         

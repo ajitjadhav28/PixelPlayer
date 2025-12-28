@@ -140,16 +140,24 @@ class MusicRepositoryImpl @Inject constructor(
         val allowedSongs = config?.let { songs.filterBlocked(it) } ?: songs
         if (allowedSongs.isEmpty()) return emptyList()
 
-        val allowedSongIds = allowedSongs.map { it.id }.toSet()
-        val filteredCrossRefs = crossRefs.filterBySongs(allowedSongIds)
-        val artistIds = filteredCrossRefs.map { it.artistId }.toSet()
-        val artistMap = artists.filter { artistIds.contains(it.id) }.associateBy { it.id }
+        val allowedSongIds = allowedSongs.mapTo(HashSet(allowedSongs.size)) { it.id }
+        val filteredCrossRefs = crossRefs.filter { allowedSongIds.contains(it.songId) }
+
+        // Build artist lookup map only for artists we actually need
+        val artistIds = filteredCrossRefs.mapTo(HashSet()) { it.artistId }
+        val artistMap = artists.asSequence()
+            .filter { artistIds.contains(it.id) }
+            .associateBy { it.id }
+
         val crossRefsBySong = filteredCrossRefs.groupBy { it.songId }
 
-        return allowedSongs.map { song ->
-            val songCrossRefs = crossRefsBySong[song.id].orEmpty()
-            val songArtists = songCrossRefs.mapNotNull { artistMap[it.artistId] }
-            song.toSongWithArtistRefs(songArtists, songCrossRefs)
+        // Pre-allocate result list for better performance
+        return ArrayList<Song>(allowedSongs.size).apply {
+            allowedSongs.forEach { song ->
+                val songCrossRefs = crossRefsBySong[song.id].orEmpty()
+                val songArtists = songCrossRefs.mapNotNull { artistMap[it.artistId] }
+                add(song.toSongWithArtistRefs(songArtists, songCrossRefs))
+            }
         }
     }
 
@@ -188,9 +196,11 @@ class MusicRepositoryImpl @Inject constructor(
             permittedSongsFlow,
             directoryFilterConfig
         ) { albums, allowedSongs, _ ->
-            val allowedAlbumIds = allowedSongs.map { it.albumId }.toSet()
-            albums.filter { allowedAlbumIds.contains(it.id) }
+            val allowedAlbumIds = allowedSongs.mapTo(HashSet(allowedSongs.size)) { it.albumId }
+            albums.asSequence()
+                .filter { allowedAlbumIds.contains(it.id) }
                 .map { it.toAlbum() }
+                .toList()
         }.conflate().flowOn(Dispatchers.IO)
     }
 
@@ -216,14 +226,17 @@ class MusicRepositoryImpl @Inject constructor(
             directoryFilterConfig,
             allCrossRefsFlow
         ) { artists, allowedSongs, _, crossRefs ->
-            val allowedSongIds = allowedSongs.map { it.id }.toSet()
-            val allowedCrossRefs = crossRefs.filterBySongs(allowedSongIds)
-            val allowedArtistIds = allowedCrossRefs.map { it.artistId }.toMutableSet()
-            // Fallback to primary artist ids in case cross-refs are empty for some reason
-            allowedArtistIds.addAll(allowedSongs.map { it.artistId })
+            val allowedSongIds = allowedSongs.mapTo(HashSet(allowedSongs.size)) { it.id }
+            val allowedCrossRefs = crossRefs.filter { allowedSongIds.contains(it.songId) }
+            val allowedArtistIds = HashSet<Long>(allowedCrossRefs.size + allowedSongs.size).apply {
+                addAll(allowedCrossRefs.map { it.artistId })
+                addAll(allowedSongs.map { it.artistId })
+            }
 
-            artists.filter { allowedArtistIds.contains(it.id) }
+            artists.asSequence()
+                .filter { allowedArtistIds.contains(it.id) }
                 .map { it.toArtist() }
+                .toList()
         }.conflate().flowOn(Dispatchers.IO)
     }
 
@@ -334,9 +347,11 @@ class MusicRepositoryImpl @Inject constructor(
             permittedSongsFlow,
             directoryFilterConfig
         ) { albums, allowedSongs, _ ->
-            val allowedAlbumIds = allowedSongs.map { it.albumId }.toSet()
-            albums.filter { allowedAlbumIds.contains(it.id) }
+            val allowedAlbumIds = allowedSongs.mapTo(HashSet(allowedSongs.size)) { it.albumId }
+            albums.asSequence()
+                .filter { allowedAlbumIds.contains(it.id) }
                 .map { it.toAlbum() }
+                .toList()
         }.conflate().flowOn(Dispatchers.IO)
     }
 
@@ -352,13 +367,17 @@ class MusicRepositoryImpl @Inject constructor(
             directoryFilterConfig,
             allCrossRefsFlow
         ) { artists, allowedSongs, _, crossRefs ->
-            val allowedSongIds = allowedSongs.map { it.id }.toSet()
-            val allowedCrossRefs = crossRefs.filterBySongs(allowedSongIds)
-            val allowedArtistIds = allowedCrossRefs.map { it.artistId }.toMutableSet()
-            allowedArtistIds.addAll(allowedSongs.map { it.artistId })
+            val allowedSongIds = allowedSongs.mapTo(HashSet(allowedSongs.size)) { it.id }
+            val allowedCrossRefs = crossRefs.filter { allowedSongIds.contains(it.songId) }
+            val allowedArtistIds = HashSet<Long>(allowedCrossRefs.size + allowedSongs.size).apply {
+                addAll(allowedCrossRefs.map { it.artistId })
+                addAll(allowedSongs.map { it.artistId })
+            }
 
-            artists.filter { allowedArtistIds.contains(it.id) }
+            artists.asSequence()
+                .filter { allowedArtistIds.contains(it.id) }
                 .map { it.toArtist() }
+                .toList()
         }.conflate().flowOn(Dispatchers.IO)
     }
 
